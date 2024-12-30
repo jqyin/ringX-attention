@@ -14,11 +14,15 @@ This repo supports optimized implementations of [ring flash attention](https://g
 
 | Algo  | Comm.                                                                                              | Memory |
 |-------|----------------------------------------------------------------------------------------------------|--------|
-| v1    | all-gather(k, v)                                                                                   | O(S)   |
-| v2    | all-gather(kv)                                                                                     | O(S)   |
+| v2    | Forward: all-gather(kv) Backward: all-gather(kv), reduce_scatter(dkv)                              | O(S)   |
 | v3    | Forward: broadcast(q) all-reduce(lse) reduce(lse, out)   Backward: broadcast(k,v) reduce(dq,dk,dv) | O(S/N) |
 | v4    |                                                                                                    |        |
 | v5    |                                                                                                    |        |
 | v6    |                                                                                                    |        |
 | v7    | Forward: broadcast(q) all-reduce(lse) reduce(lse,out)  Backward: all-gather(k,v) reduce(dkv)       | O(S)   |
 
+### Test
+
+```bash
+srun -n8 bash -c "source setup_dist_vars.sh; python test/test_ringX_noncausal_attn_func.py"
+```
