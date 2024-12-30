@@ -101,6 +101,7 @@ if __name__ == "__main__":
         alibi_slopes=None,
         deterministic=deterministic,
         return_attn_probs=True,
+        group=dist.group.WORLD,
     )
 
     log("out", out, rank0_only=True)
@@ -129,6 +130,6 @@ if __name__ == "__main__":
     ring_dv = local_v.grad
 
     #log("local_dqkv", local_dqkv)
-    log("dq diff", local_dq[:] - ring_dq[:, 0])
-    log("dk diff", local_dk[:] - ring_dk[:, 1])
-    log("dv diff", local_dv[:] - ring_dv[:, 2])
+    log("dq diff", local_dq[:] - ring_dq[:])
+    log("dk diff", local_dk[:] - ring_dk[:])
+    log("dv diff", local_dv[:] - ring_dv[:])
