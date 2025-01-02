@@ -88,11 +88,10 @@ def ringX_attn_backward(
     dq_buffer = torch.empty_like(q)
     dk_buffer = torch.empty_like(k)
     dv_buffer = torch.empty_like(v)
-    k_buffer = torch.empty_like(k).contiguous()
-    v_buffer = torch.empty_like(v).contiguous()
-    dq_sum = torch.empty_like(q, dtype=torch.float32).contiguous()
-    dk_sum = torch.empty_like(k, dtype=torch.float32).contiguous()
-    dv_sum = torch.empty_like(v, dtype=torch.float32).contiguous()
+    kv = torch.cat([k,v], dim=0)
+    kv_buffer = torch.empty_like(kv)
+    k_size0 = k.shape[0]
+    dkv_sum = torch.empty_like(kv, dtype=torch.float32).contiguous()
 
     def flash_backward(dout, q, k, v, out, softmax_lse, causal):
         params = get_default_args(_flash_attn_backward).copy()
@@ -118,25 +117,23 @@ def ringX_attn_backward(
         _flash_attn_backward(**params)
 
     for i in range(world_size):
-        k_buffer.copy_(k)
-        v_buffer.copy_(v)
+        kv_buffer[:k_size0].copy_(k)
+        kv_buffer[k_size0:].copy_(v)
         res_rank = dist.get_global_rank(process_group, i)
-        dist.broadcast(k_buffer, src=res_rank, group=process_group) 
-        dist.broadcast(v_buffer, src=res_rank, group=process_group) 
-     
-        flash_backward(dout, q, k_buffer, v_buffer, out, softmax_lse, causal=(causal and rank==i))
+        dist.broadcast(kv_buffer, src=res_rank, group=process_group)
+        
+        flash_backward(dout, q, kv_buffer[:k_size0], kv_buffer[k_size0:], out, softmax_lse, causal=(causal and rank==i)) 
         if dq is None: 
             dq = dq_buffer.to(torch.float32)
         else:
             dq += dq_buffer
 
-        dk_sum.copy_(dk_buffer)
-        dv_sum.copy_(dv_buffer)
-        dist.reduce(dk_sum, dst=res_rank, op=dist.ReduceOp.SUM, group=process_group)
-        dist.reduce(dv_sum, dst=res_rank, op=dist.ReduceOp.SUM, group=process_group)
+        dkv_sum[:k_size0].copy_(dk_buffer)
+        dkv_sum[k_size0:].copy_(dv_buffer)
+        dist.reduce(dkv_sum, dst=res_rank, op=dist.ReduceOp.SUM, group=process_group)
         if rank == i: 
-            dk = dk_sum.clone()
-            dv = dv_sum.clone() 
+            dk = dkv_sum[:k_size0].clone()
+            dv = dkv_sum[k_size0:].clone()
     return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype)
 
 

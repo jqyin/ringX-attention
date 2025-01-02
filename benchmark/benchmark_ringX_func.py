@@ -158,7 +158,7 @@ def benchmark(args, f, warmup_iter=1, num_iter=100, forward_only=True, log=True,
         profiler.stop()
 
     if rank == 0 and log:
-        print(f"{num_iter / time:.3f} iter/s, {time:.3f} sec")
+        print(f"{num_iter / time:.6f} iter/s, {time:.3f} sec")
 
 
 if __name__ == "__main__":
