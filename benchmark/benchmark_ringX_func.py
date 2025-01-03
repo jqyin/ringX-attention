@@ -24,7 +24,7 @@ def benchmark(args, f, warmup_iter=1, num_iter=100, forward_only=True, log=True,
     seqlen = args.seq_length
     num_heads = args.num_heads
     head_dim = args.head_dim
-    causal = False
+    causal = args.causal
 
     assert seqlen % (2 * world_size) == 0
     assert head_dim % 8 == 0
