@@ -93,6 +93,7 @@ def ringX_attn_backward(
     kv_buffer = torch.empty_like(kv)
     k_size0 = k.shape[0]
     dkv_sum = torch.empty_like(kv, dtype=torch.float32).contiguous()
+    dq_sum = torch.empty_like(q, dtype=torch.float32).contiguous()
 
     def flash_backward(dout, q, k, v, out, softmax_lse, causal):
         params = get_default_args(_flash_attn_backward).copy()
@@ -139,14 +140,16 @@ def ringX_attn_backward(
 
         dkv_sum[:k_size0].copy_(dk_buffer)
         dkv_sum[k_size0:].copy_(dv_buffer)
+        dq_sum.copy_(dq_buffer)
         dist.reduce(dkv_sum, dst=res_rank, op=dist.ReduceOp.SUM, group=process_group)
+        dist.reduce(dq_sum, dst=res_rank, op=dist.ReduceOp.SUM, group=process_group)
         if rank == i: 
             if dq is None:
                 dq = dq_sum.clone()
             else:
                 dq += dq_sum
-            dk = dk_sum.clone()
-            dv = dv_sum.clone()
+            dk = dkv_sum[:k_size0].clone()
+            dv = dkv_sum[k_size0:].clone()
 
     return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype)
 
