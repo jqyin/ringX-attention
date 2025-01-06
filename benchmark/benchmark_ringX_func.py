@@ -2,12 +2,10 @@ from flash_attn import flash_attn_func
 import os
 import torch
 import torch.distributed as dist
-from ring_flash_attn import (
-     ring_flash_attn_func,
-#    ring_flash_attn_kvpacked_func,
-#    zigzag_ring_flash_attn_kvpacked_func,
-#    stripe_flash_attn_kvpacked_func,
-)
+from datetime import timedelta
+from ring_flash_attn import ring_flash_attn_func
+from zigzag_ring_flash_attn import zigzag_ring_flash_attn_func
+from stripe_flash_attn import stripe_flash_attn_func
 #from ringX2_attn import ringX_attn_func
 import argparse, importlib
 
@@ -171,7 +169,7 @@ if __name__ == "__main__":
     parser.add_argument("--head_dim", type=int, default=64, help="Dimension of each attention head.")
     parser.add_argument("--module", type=str, required=True, help="Module name to import the function.")
     parser.add_argument("--causal", action='store_true', help="Enable causal attention masking.")
-    dist.init_process_group("nccl")
+    dist.init_process_group("nccl", timeout=timedelta(seconds=36000))
     rank = dist.get_rank()
     args = parser.parse_args()
     try:
@@ -192,13 +190,10 @@ if __name__ == "__main__":
     num_iter = 5
 
     for f in [
-        #flash_attn_kvpacked_func,
-        #ring_flash_attn_kvpacked_func,
-        #zigzag_ring_flash_attn_kvpacked_func,
-        #stripe_flash_attn_kvpacked_func,
-        
         ringX_attn_func,
-        ring_flash_attn_func,
+        zigzag_ring_flash_attn_func,
+        #stripe_flash_attn_func,
+        #ring_flash_attn_func,
     ]:
         torch.cuda.empty_cache()
         if rank == 0:

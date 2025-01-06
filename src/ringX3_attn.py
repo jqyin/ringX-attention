@@ -29,7 +29,7 @@ def ringX_attn_forward(
 
     out = None
     lse = None
-    def forward(q, k, v, causal):
+    def flash_forward(q, k, v, causal):
         params = get_default_args(_flash_attn_forward).copy()
         params.update(
             {
@@ -47,7 +47,7 @@ def ringX_attn_forward(
         out, _, _, _, _, lse, _, _ = _flash_attn_forward(**params)
         return out, lse
 
-    block_out, block_lse = forward(q, k, v, causal=True)
+    block_out, block_lse = flash_forward(q, k, v, causal=True)
     out, lse = update_out_and_lse(out, lse, block_out, block_lse)
     gather_kv.wait() 
 
@@ -55,10 +55,10 @@ def ringX_attn_forward(
         if i == rank: 
             continue 
         if i < rank:
-            block_out, block_lse = forward(q, kv_all[i][:k_size,:block_seq_len], kv_all[i][k_size:,:block_seq_len], causal=False)
+            block_out, block_lse = flash_forward(q, kv_all[i][:k_size,:block_seq_len], kv_all[i][k_size:,:block_seq_len], causal=False)
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
         else:  
-            block_out, block_lse = forward(q[:,block_seq_len:], kv_all[i][:k_size], kv_all[i][k_size:], causal=False)
+            block_out, block_lse = flash_forward(q[:,block_seq_len:], kv_all[i][:k_size], kv_all[i][k_size:], causal=False)
             out, lse = update_out_and_lse(out, lse, block_out, block_lse, slice_=(slice(None), slice(block_seq_len, None)))
     
     out = out.to(q.dtype)
@@ -101,7 +101,7 @@ def ringX_attn_backward(
     dkv_all = [torch.zeros_like(dkv) for _ in range(world_size)]
     dk_size = dk_buffer.shape[0]
  
-    def backward(dout, q, k, v, out, softmax_lse, causal):
+    def flash_backward(dout, q, k, v, out, softmax_lse, causal):
         seqlen_q = q.shape[1]
         seqlen_kv = k.shape[1]
         params = get_default_args(_flash_attn_backward).copy()
@@ -127,7 +127,7 @@ def ringX_attn_backward(
         _flash_attn_backward(**params)
 
 
-    backward(dout, q, k, v, out, softmax_lse, causal=True)
+    flash_backward(dout, q, k, v, out, softmax_lse, causal=True)
     dq = dq_buffer.to(torch.float32)
     dkv_all[rank][:dk_size] = dk_buffer
     dkv_all[rank][dk_size:] = dv_buffer
@@ -138,12 +138,12 @@ def ringX_attn_backward(
         if i == rank:
             continue 
         if i < rank:
-            backward(dout, q, kv_all[i][:k_size,:block_seq_len], kv_all[i][k_size:,:block_seq_len], out, softmax_lse, causal=False)
+            flash_backward(dout, q, kv_all[i][:k_size,:block_seq_len], kv_all[i][k_size:,:block_seq_len], out, softmax_lse, causal=False)
             dq += dq_buffer
             dkv_all[i][:dk_size, :block_seq_len] = dk_buffer[:, :block_seq_len]
             dkv_all[i][dk_size:, :block_seq_len] = dv_buffer[:, :block_seq_len]
         else:
-            backward(dout1, q1, kv_all[i][:k_size], kv_all[i][k_size:], out1, softmax_lse1, causal=False)
+            flash_backward(dout1, q1, kv_all[i][:k_size], kv_all[i][k_size:], out1, softmax_lse1, causal=False)
             dq[:, block_seq_len:] += dq_buffer[:, :block_seq_len]
             dkv_all[i][:dk_size] = dk_buffer
             dkv_all[i][dk_size:] = dv_buffer
