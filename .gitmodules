@@ -1,3 +1,7 @@
 [submodule "vit"]
 	path = app/vit
 	url = https://github.com/jqyin/climate-vit
+[submodule "app/gpt"]
+	path = app/gpt
+	url = https://github.com/at-aaims/forge.git
+	branch = xforge
