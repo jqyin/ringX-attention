@@ -1,0 +1,3 @@
+[submodule "vit"]
+	path = app/vit
+	url = https://github.com/jqyin/climate-vit
