@@ -9,13 +9,15 @@
 #SBATCH -o tft.o%j
 #SBATCH -e tft.e%j
 
-source ../../env.sh
-export PYTHONPATH=/lustre/orion/scratch/junqi/stf218/xforge/tree-flash-attention/upstream/ringX-attention/ring_flash_attn
+#algo="ringX2_attn"   
+algo="${@}"   
+
+module use /sw/aaims/crusher/modulefiles
+module load xforge
+export PYTHONPATH=../src
 export NCCL_SOCKET_IFNAME=hsn
 export MIOPEN_DISABLE_CACHE=1
 export OMP_NUM_THREADS=7
-
-
 
 export FI_PROVIDER=cxi
 export NCCL_NET_GDR_LEVEL=3
@@ -30,21 +32,18 @@ export FI_PROVIDER=cxi
 export FI_MR_CACHE_MONITOR=disabled
 export NCCL_ALGO=Tree
 
-
-batch_sizes=(16 32 64 128)
-seq_lengths=(16384 8192 4096 2048)
+batch_sizes=(32 64 128 256)
+seq_lengths=(8192 4096 2048 1024)
 
 num_heads=32
 head_dim=128
 causal=false
 
-algo="ringX2_attn"   
-
 for ((i=0; i<${#batch_sizes[@]}; i++)); do
   batch_size=${batch_sizes[i]}
   seq_length=${seq_lengths[i]}
 
-  CMD="python benchmark/benchmark_ringX_func.py \
+  CMD="python ../benchmark/benchmark_ringX_func.py \
     --batch_size $batch_size \
     --seq_length $seq_length \
     --num_heads $num_heads \
