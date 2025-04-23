@@ -3,10 +3,11 @@ import os
 import torch
 import torch.distributed as dist
 from datetime import timedelta
-from ring_flash_attn import ring_flash_attn_func
-from zigzag_ring_flash_attn import zigzag_ring_flash_attn_func
-from stripe_flash_attn import stripe_flash_attn_func
-#from ringX2_attn import ringX_attn_func
+from ring_flash_attn import (
+    ring_flash_attn_func,
+    zigzag_ring_flash_attn_func,
+    stripe_flash_attn_func,
+)
 import argparse, importlib
 
 def benchmark(args, f, warmup_iter=1, num_iter=100, forward_only=True, log=True, profile=False):
@@ -164,11 +165,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parse model configuration arguments.")
 
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training or inference.")
+    parser.add_argument("--num_iter", type=int, default=10, help="Number of iterations.")
     parser.add_argument("--seq_length", type=int, default=128, help="Sequence length for input data.")
     parser.add_argument("--num_heads", type=int, default=8, help="Number of attention heads.")
     parser.add_argument("--head_dim", type=int, default=64, help="Dimension of each attention head.")
     parser.add_argument("--module", type=str, required=True, help="Module name to import the function.")
     parser.add_argument("--causal", action='store_true', help="Enable causal attention masking.")
+    parser.add_argument("--forward_only", action='store_true', help="Benchmark forward pass only.")
+    parser.add_argument("--profile", action='store_true', help="Enable profiling.")
     dist.init_process_group("nccl", timeout=timedelta(seconds=36000))
     rank = dist.get_rank()
     args = parser.parse_args()
@@ -185,15 +189,15 @@ if __name__ == "__main__":
         print(f"Number of heads: {args.num_heads}")
         print(f"Head dimension: {args.head_dim}")
 
-    forward_only = False
-    profile = False
-    num_iter = 5
+    forward_only = args.forward_only
+    profile = args.profile
+    num_iter = args.num_iter
 
     for f in [
         ringX_attn_func,
         zigzag_ring_flash_attn_func,
-        #stripe_flash_attn_func,
-        #ring_flash_attn_func,
+        stripe_flash_attn_func,
+        ring_flash_attn_func,
     ]:
         torch.cuda.empty_cache()
         if rank == 0:
