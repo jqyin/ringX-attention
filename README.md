@@ -59,7 +59,7 @@ pip install -v --no-build-isolation --config-settings "--build-option=--cpp_ext"
 To test `ringX1`: 
 ```bash
 cd script 
-srun -n8 bash -c "source setup_dist_vars.sh; python ../test/test_ringX_noncausal_attn_func.py"
+srun -n8 bash -c "source setup_dist_vars.sh; python ../test/test_ringX1_attn_func.py"
 ```
 
 ### Benchmark
@@ -70,13 +70,20 @@ sbatch submit_frontier.sh ringX1_attn
 ```
 
 ### ViT Application 
+To train ViT models with sizes up to 2.6B and context length up to 256K: 
 ```bash
 cd app/vit
 sbatch submit_frontier_cp.sh
 ```
+To generate the model prediction:
+```bash
+cd app/vit
+srun -n8 bash -c "source export_DDP_vars.sh; python inference-cp8.py --config=mp_p2_ringX --tensor_parallel=1 --context_parallel=8 --parallel_order=cp-tp-dp"
+```
 
 ### GPT Application  
+To train a Llama3 8b model with context length up to 1M tokens: 
 ```bash
 cd app/gpt/train
-sbatch job.sb
+sbatch job.sb xforge/llama3-8b-1m
 ```
