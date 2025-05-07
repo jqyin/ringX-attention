@@ -205,3 +205,4 @@ if __name__ == "__main__":
         benchmark(
             args, f, forward_only=forward_only, num_iter=num_iter, log=True, profile=profile
         )
+    dist.destroy_process_group()

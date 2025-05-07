@@ -9,9 +9,8 @@ from functools import cache
 
 __all__ = ["update_out_and_lse", "get_default_args"]
 
-
 @cache
-def get_default_args(func):
+def _get_default_args(func):
     spec = inspect.getfullargspec(func)
     defaults = spec.defaults if spec.defaults is not None else ()
     padded_defaults = (None,) * (len(spec.args) - len(defaults)) + defaults
@@ -20,6 +19,12 @@ def get_default_args(func):
         args["softcap"] = 0.0
     return args
 
+
+def get_default_args(func):
+    if inspect.isfunction(func):
+        return _get_default_args(func)
+    else:
+        return _get_default_args(func._init_fn)
 
 @torch.jit.script
 def _update_out_and_lse(

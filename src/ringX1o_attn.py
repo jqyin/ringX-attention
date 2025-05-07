@@ -23,6 +23,15 @@ def ringX_attn_forward(
     q_buffers = [torch.empty_like(q).contiguous() for _ in range(2)]
     def flash_forward(q, k, v, causal):
         params = get_default_args(_flash_attn_forward).copy()
+        if "window_size" in params:
+            params.update({"window_size": window_size})
+        else:
+            params.update(
+                     {
+                         "window_size_left": window_size[0],
+                         "window_size_right": window_size[1],
+                     }
+            )
         params.update(
             {
                 "q": q,
@@ -31,12 +40,17 @@ def ringX_attn_forward(
                 "dropout_p": dropout_p,
                 "softmax_scale": softmax_scale,
                 "causal": causal,
-                "window_size": window_size,
                 "alibi_slopes": alibi_slopes,
                 "return_softmax": True and dropout_p > 0,
             }
         )
-        out, _, _, _, _, lse, _, _ = _flash_attn_forward(**params)
+        outputs = _flash_attn_forward(**params)
+        if len(outputs) == 8:
+            out, _, _, _, _, lse, _, _ = outputs
+        else:
+            assert len(outputs) == 4
+            out, lse, _, _ = outputs
+
         return out, lse
     
     q_buffers[0].copy_(q)
@@ -149,6 +163,16 @@ def ringX_attn_backward(
  
     def flash_backward(dout, q, k, v, out, softmax_lse, causal):
         params = get_default_args(_flash_attn_backward).copy()
+        if "window_size" in params:
+            params.update({"window_size": window_size})
+        else:
+            params.update(
+                     {
+                         "window_size_left": window_size[0],
+                         "window_size_right": window_size[1],
+                     }
+            )
+        rng_state = torch.empty((2,), dtype=torch.int64, device=q.device)
         params.update(
             {
                 "dout": dout,
@@ -163,9 +187,9 @@ def ringX_attn_backward(
                 "dropout_p": dropout_p,
                 "softmax_scale": softmax_scale,
                 "causal": causal,
-                "window_size": window_size,
                 "alibi_slopes": alibi_slopes,
                 "deterministic": deterministic,
+                "rng_state": rng_state,
             }
         )
         _flash_attn_backward(**params)
