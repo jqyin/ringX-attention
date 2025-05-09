@@ -2,6 +2,13 @@ import torch
 import torch.distributed as dist
 from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
 from utils import get_default_args, update_out_and_lse
+try:
+    from pccl import ProcessGroups, all_gather_2D, reduce_scatter_2D
+    HAS_PCCL = True
+except ImportError:
+    HAS_PCCL = False
+
+num_gpus_per_node = 8 
 
 def ringX_attn_forward(
     process_group,
@@ -19,9 +26,28 @@ def ringX_attn_forward(
 
     rank = dist.get_rank(group=process_group)
     world_size = dist.get_world_size(group=process_group)
+
+    if HAS_PCCL:    
+        assert world_size%8 == 0 and world_size >= 8, "PCCL is intended for multi-node CP"
+        pg = ProcessGroups(num_gpus_per_node, world_size//num_gpus_per_node)
+
     kv = torch.cat([k, v], dim=0)
-    kv_all = [torch.empty_like(kv) for _ in range(world_size)]
-    gather_kv = dist.all_gather(kv_all, kv, group=process_group, async_op=True)
+    if HAS_PCCL:
+        kv_shape = kv.shape
+        kv_flat = kv.contiguous().view(-1)
+        numel_per_rank = kv_flat.numel()
+        kv_all_flat = torch.empty(world_size * numel_per_rank,
+                          dtype=kv_flat.dtype,
+                          device=kv_flat.device)
+        all_gather_2D(kv_all_flat, kv_flat, group=pg, use_rd=True, use_pccl_cpp_backend=True)
+        kv = kv_flat.view(kv.shape)
+        kv_all = [
+            kv_all_flat[i * numel_per_rank : (i + 1) * numel_per_rank].view(kv_shape)
+            for i in range(world_size)
+        ]
+    else:
+        kv_all = [torch.empty_like(kv) for _ in range(world_size)]
+        gather_kv = dist.all_gather(kv_all, kv, group=process_group, async_op=True)
 
     k_size = k.shape[0]
 
@@ -61,7 +87,8 @@ def ringX_attn_forward(
 
     block_out, block_lse = flash_forward(q, k, v, causal=False)
     out, lse = update_out_and_lse(out, lse, block_out, block_lse)
-    gather_kv.wait() 
+    if not HAS_PCCL:
+        gather_kv.wait() 
 
     for i in range(world_size):
         if i == rank: 
@@ -92,17 +119,38 @@ def ringX_attn_backward(
     
     rank = dist.get_rank(group=process_group)
     world_size = dist.get_world_size(group=process_group)
+    if HAS_PCCL:    
+        assert world_size%8 == 0 and world_size >= 8, "PCCL is intended for multi-node CP"
+        pg = ProcessGroups(num_gpus_per_node, world_size//num_gpus_per_node)
+
     kv = torch.cat([k, v], dim=0)
-    kv_all = [torch.empty_like(kv) for _ in range(world_size)]
-    gather_kv = dist.all_gather(kv_all, kv, group=process_group, async_op=True)
+    if HAS_PCCL:
+        kv_shape = kv.shape
+        kv_flat = kv.contiguous().view(-1)
+        numel_per_rank = kv_flat.numel()
+        kv_all_flat = torch.empty(world_size * numel_per_rank,
+                          dtype=kv_flat.dtype,
+                          device=kv_flat.device)
+        all_gather_2D(kv_all_flat, kv_flat, group=pg, use_rd=True, use_pccl_cpp_backend=True)
+        kv = kv_flat.view(kv.shape)
+        kv_all = [
+            kv_all_flat[i * numel_per_rank : (i + 1) * numel_per_rank].view(kv_shape)
+            for i in range(world_size)
+        ]
+    else:
+        kv_all = [torch.empty_like(kv) for _ in range(world_size)]
+        gather_kv = dist.all_gather(kv_all, kv, group=process_group, async_op=True)
 
     k_size = k.shape[0]
-    dq_buffer = torch.empty(q.shape, dtype=q.dtype, device=q.device)
-    dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
-    dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
-    dkv = torch.cat([dk_buffer, dv_buffer], dim=0)
-    dkv_all = [torch.zeros_like(dkv) for _ in range(world_size)]
-    dk_size = dk_buffer.shape[0]
+    dq_buffer = torch.empty_like(q)
+    dk_buffer = torch.empty_like(k)
+    dv_buffer = torch.empty_like(v)
+    dk_flat = dk_buffer.view(-1)
+    dv_flat = dv_buffer.view(-1)
+    dkv = torch.empty(dk_flat.numel() + dv_flat.numel(), dtype=torch.float32, device=q.device)
+    chunk_size = dkv.numel()
+    dkv_all = torch.zeros(world_size * chunk_size, dtype=torch.float32, device=q.device)
+    dk_size = dk_flat.numel()
  
     def flash_backward(dout, q, k, v, out, softmax_lse, causal):
         seqlen_q = q.shape[1]
@@ -142,22 +190,30 @@ def ringX_attn_backward(
 
     flash_backward(dout, q, k, v, out, softmax_lse, causal=False)
     dq = dq_buffer.to(torch.float32)
-    dkv_all[rank][:dk_size] = dk_buffer
-    dkv_all[rank][dk_size:] = dv_buffer
+    offset = rank * chunk_size
+    dkv_all[offset : offset + dk_size].copy_(dk_flat)
+    dkv_all[offset + dk_size : offset + chunk_size].copy_(dv_flat)
 
-    gather_kv.wait() 
+    if not HAS_PCCL:    
+        gather_kv.wait()
 
     for i in range(world_size):
         if i == rank:
-            continue 
+            continue
         flash_backward(dout, q, kv_all[i][:k_size], kv_all[i][k_size:], out, softmax_lse, causal=False)
         dq += dq_buffer
-        dkv_all[i][:dk_size] = dk_buffer[:]
-        dkv_all[i][dk_size:] = dv_buffer[:]
+        offset = i * chunk_size
+        dkv_all[offset : offset + dk_size].copy_(dk_flat)
+        dkv_all[offset + dk_size : offset + chunk_size].copy_(dv_flat)
 
-    dist.reduce_scatter(dkv, dkv_all, op=dist.ReduceOp.SUM, group=process_group)
+    if HAS_PCCL:
+        reduce_scatter_2D(dkv, dkv_all, group=pg, use_rh=True, use_pccl_cpp_backend=True)
+    else:
+        dkv_all_list = list(torch.split(dkv_all, chunk_size))
+        dist.reduce_scatter(dkv, dkv_all_list, op=dist.ReduceOp.SUM, group=process_group)
 
-    return dq.to(q.dtype), dkv[:dk_size].to(k.dtype), dkv[dk_size:].to(v.dtype)
+    return dq.to(q.dtype), dkv[:dk_size].view_as(k).to(k.dtype), dkv[dk_size:].view_as(v).to(v.dtype)
+
 
 class RingXAttnFunc(torch.autograd.Function):
     @staticmethod
