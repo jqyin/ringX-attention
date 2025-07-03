@@ -1,8 +1,7 @@
 import torch
 import torch.distributed as dist
 from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
-from utils import get_default_args, update_out_and_lse
-
+from .utils import get_default_args
 
 def ringX_attn_forward(
     process_group,
@@ -16,19 +15,11 @@ def ringX_attn_forward(
     alibi_slopes=None,
     deterministic=False,
 ):
-    assert causal == True, "ringX3 is intended for causal=True"
 
     rank = dist.get_rank(group=process_group)
     world_size = dist.get_world_size(group=process_group)
-    kv = torch.cat([k, v], dim=0)
-    kv_all = [torch.empty_like(kv) for _ in range(world_size)]
-    gather_kv = dist.all_gather(kv_all, kv, group=process_group, async_op=True)
-
-    block_seq_len = q.shape[1] // 2
-    k_size = k.shape[0]
-
-    out = None
-    lse = None
+    out, lse, lse_max = None, None, None
+    q_buffer = torch.empty_like(q).contiguous()
     def flash_forward(q, k, v, causal):
         params = get_default_args(_flash_attn_forward).copy()
         if "window_size" in params:
@@ -61,24 +52,34 @@ def ringX_attn_forward(
 
         return out, lse
 
-    block_out, block_lse = flash_forward(q, k, v, causal=True)
-    out, lse = update_out_and_lse(out, lse, block_out, block_lse)
-    gather_kv.wait() 
-
-    for i in range(world_size):
-        if i == rank: 
-            continue 
-        if i < rank:
-            block_out, block_lse = flash_forward(q, kv_all[i][:k_size,:block_seq_len], kv_all[i][k_size:,:block_seq_len], causal=False)
-            out, lse = update_out_and_lse(out, lse, block_out, block_lse)
-        else:  
-            block_out, block_lse = flash_forward(q[:,block_seq_len:], kv_all[i][:k_size], kv_all[i][k_size:], causal=False)
-            out, lse = update_out_and_lse(out, lse, block_out, block_lse, slice_=(slice(None), slice(block_seq_len, None)))
-    
-    out = out.to(q.dtype)
-    lse = lse.squeeze(dim=-1).transpose(1, 2)
+    for i in range(world_size - 1, -1, -1):
+        q_buffer[:] = q
+        res_rank = dist.get_global_rank(process_group, i)
+        dist.broadcast(q_buffer, src=res_rank, group=process_group) 
+        
+        if not causal or rank <= i:
+            loc_out, loc_lse = flash_forward(q_buffer, k, v, causal=causal and rank == i)   
+            loc_out = loc_out.to(torch.float32)
+            loc_lse = loc_lse.transpose(-2, -1).unsqueeze(dim=-1).contiguous()
+            if lse_max is None: 
+                lse_max = loc_lse.clone()
+            else:
+                lse_max[:] = loc_lse
+        else:
+            lse_max[:] = -torch.finfo(q.dtype).max
+        dist.all_reduce(lse_max, op=dist.ReduceOp.MAX, group=process_group)
+        if not causal or rank <= i:
+            den = torch.exp(loc_lse - lse_max)
+            num = loc_out * den 
+        else:
+            den.zero_()
+            num.zero_()
+        dist.reduce(num, dst=res_rank, op=dist.ReduceOp.SUM, group=process_group)
+        dist.reduce(den, dst=res_rank, op=dist.ReduceOp.SUM, group=process_group)
+        if rank == i: 
+            out = num.div_(den.clamp(min=1e-8)).to(q.dtype)
+            lse = (torch.log(den) + lse_max).squeeze(dim=-1).transpose(1, 2).contiguous()
     return out, lse
-
 
 def ringX_attn_backward(
     process_group,
@@ -94,30 +95,19 @@ def ringX_attn_backward(
     window_size=(-1, -1),
     alibi_slopes=None,
     deterministic=False,
-): 
-    
+):
     rank = dist.get_rank(group=process_group)
     world_size = dist.get_world_size(group=process_group)
-    kv = torch.cat([k, v], dim=0)
-    kv_all = [torch.empty_like(kv) for _ in range(world_size)]
-    gather_kv = dist.all_gather(kv_all, kv, group=process_group, async_op=True)
+    dq, dk, dv = None, None, None
+    dq_buffer = torch.empty_like(q)
+    dk_buffer = torch.empty_like(k)
+    dv_buffer = torch.empty_like(v)
+    kv = torch.cat([k,v], dim=0)
+    kv_buffer = torch.empty_like(kv)
+    k_size0 = k.shape[0]
+    dkv_sum = torch.empty_like(kv, dtype=torch.float32).contiguous()
 
-    dout1 = dout.chunk(2, dim=1)[1]
-    q1 = q.chunk(2, dim=1)[1]
-    out1 = out.chunk(2, dim=1)[1]
-    softmax_lse1 = softmax_lse.chunk(2, dim=2)[1].contiguous()
-    block_seq_len = q.shape[1] // 2
-    k_size = k.shape[0]
-    dq_buffer = torch.empty(q.shape, dtype=q.dtype, device=q.device)
-    dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
-    dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
-    dkv = torch.cat([dk_buffer, dv_buffer], dim=0)
-    dkv_all = [torch.zeros_like(dkv) for _ in range(world_size)]
-    dk_size = dk_buffer.shape[0]
- 
     def flash_backward(dout, q, k, v, out, softmax_lse, causal):
-        seqlen_q = q.shape[1]
-        seqlen_kv = k.shape[1]
         params = get_default_args(_flash_attn_backward).copy()
         if "window_size" in params:
             params.update({"window_size": window_size})
@@ -137,9 +127,9 @@ def ringX_attn_backward(
                 "v": v,
                 "out": out,
                 "softmax_lse": softmax_lse,
-                "dq": dq_buffer[:, :seqlen_q],
-                "dk": dk_buffer[:, :seqlen_kv],
-                "dv": dv_buffer[:, :seqlen_kv],
+                "dq": dq_buffer,
+                "dk": dk_buffer,
+                "dv": dv_buffer,
                 "dropout_p": dropout_p,
                 "softmax_scale": softmax_scale,
                 "causal": causal,
@@ -150,31 +140,26 @@ def ringX_attn_backward(
         )
         _flash_attn_backward(**params)
 
-
-    flash_backward(dout, q, k, v, out, softmax_lse, causal=True)
-    dq = dq_buffer.to(torch.float32)
-    dkv_all[rank][:dk_size] = dk_buffer
-    dkv_all[rank][dk_size:] = dv_buffer
-
-    gather_kv.wait() 
-
     for i in range(world_size):
-        if i == rank:
-            continue 
-        if i < rank:
-            flash_backward(dout, q, kv_all[i][:k_size,:block_seq_len], kv_all[i][k_size:,:block_seq_len], out, softmax_lse, causal=False)
-            dq += dq_buffer
-            dkv_all[i][:dk_size, :block_seq_len] = dk_buffer[:, :block_seq_len]
-            dkv_all[i][dk_size:, :block_seq_len] = dv_buffer[:, :block_seq_len]
+        kv_buffer[:k_size0].copy_(k)
+        kv_buffer[k_size0:].copy_(v)
+        res_rank = dist.get_global_rank(process_group, i)
+        dist.broadcast(kv_buffer, src=res_rank, group=process_group)
+        
+        flash_backward(dout, q, kv_buffer[:k_size0], kv_buffer[k_size0:], out, softmax_lse, causal=(causal and rank==i)) 
+        if dq is None: 
+            dq = dq_buffer.to(torch.float32)
         else:
-            flash_backward(dout1, q1, kv_all[i][:k_size], kv_all[i][k_size:], out1, softmax_lse1, causal=False)
-            dq[:, block_seq_len:] += dq_buffer[:, :block_seq_len]
-            dkv_all[i][:dk_size] = dk_buffer
-            dkv_all[i][dk_size:] = dv_buffer
+            dq += dq_buffer
 
-    dist.reduce_scatter(dkv, dkv_all, op=dist.ReduceOp.SUM, group=process_group)
+        dkv_sum[:k_size0].copy_(dk_buffer)
+        dkv_sum[k_size0:].copy_(dv_buffer)
+        dist.reduce(dkv_sum, dst=res_rank, op=dist.ReduceOp.SUM, group=process_group)
+        if rank == i: 
+            dk = dkv_sum[:k_size0].clone()
+            dv = dkv_sum[k_size0:].clone()
+    return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype)
 
-    return dq.to(q.dtype), dkv[:dk_size].to(k.dtype), dkv[dk_size:].to(v.dtype)
 
 class RingXAttnFunc(torch.autograd.Function):
     @staticmethod
@@ -242,7 +227,7 @@ class RingXAttnFunc(torch.autograd.Function):
         return dq, dk, dv, None, None, None, None, None, None, None, None
 
 
-def ringX_attn_func(
+def ringX1_attn_func(
     q,
     k,
     v,

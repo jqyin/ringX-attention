@@ -1,7 +1,7 @@
 import torch
 import torch.distributed as dist
 from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
-from utils import get_default_args, update_out_and_lse
+from .utils import get_default_args, update_out_and_lse
 try:
     from pccl import _all_gather, all_gather_2D, reduce_scatter_2D
     HAS_PCCL = True
@@ -307,7 +307,7 @@ class RingXAttnFunc(torch.autograd.Function):
         return dq, dk, dv, None, None, None, None, None, None, None, None
 
 
-def ringX_attn_func(
+def ringX3b_attn_func(
     q,
     k,
     v,

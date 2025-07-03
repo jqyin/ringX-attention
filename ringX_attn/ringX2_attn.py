@@ -1,7 +1,7 @@
 import torch
 import torch.distributed as dist
 from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
-from utils import get_default_args
+from .utils import get_default_args
 
 def ringX_attn_forward(
     process_group,
@@ -243,7 +243,7 @@ class RingXAttnFunc(torch.autograd.Function):
         return dq, dk, dv, None, None, None, None, None, None, None, None
 
 
-def ringX_attn_func(
+def ringX2_attn_func(
     q,
     k,
     v,

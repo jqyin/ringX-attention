@@ -1,7 +1,7 @@
 from flash_attn import flash_attn_func
 import torch
 import torch.distributed as dist
-from ringX3_attn import ringX_attn_func 
+from ringX3_attn import ringX3_attn_func as ringX_attn_func
 from utils import log, set_seed
 
 

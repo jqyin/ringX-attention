@@ -178,7 +178,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     try:
         module = importlib.import_module(args.module)
-        ringX_attn_func = getattr(module, "ringX_attn_func")
+        func_name = f"{args.module}_func"
+        ringX_attn_func = getattr(module, func_name)
     except ModuleNotFoundError:
         print(f"Error: Module '{args.module}' not found.") 
 

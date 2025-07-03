@@ -14,7 +14,7 @@ algo="${@}"
 
 module use /sw/aaims/crusher/modulefiles
 module load xforge
-export PYTHONPATH=../src
+export PYTHONPATH=../ringX_attn
 export NCCL_SOCKET_IFNAME=hsn
 export MIOPEN_DISABLE_CACHE=1
 export OMP_NUM_THREADS=7
