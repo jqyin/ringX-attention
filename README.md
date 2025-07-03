@@ -17,6 +17,15 @@ This repo supports optimized implementations of ring attention on HPC:
 | X3    |  all-gather(kv) reduce_scatter(dkv); O(4hbs/N)                                                     | O(hbs) |
 | X4    |  broadcast(kv) reduce(qkv); O(4hbs/N)                                                              | O(hbs/N)   |
 
+## Installation
+Before proceeding as follows, make sure you have installed PyTorch and FlashAttention (tested with v2.7).
+```bash
+git clone https://github.com/jqyin/ringX-attention
+cd ringX-attention
+pip install -e .
+```
+
+## Usage on Frontier 
 ### Software environment 
 - gcc 12.2.0
 - Python 3.12.0
