@@ -96,3 +96,17 @@ To train a Llama3 8b model with context length up to 1M tokens:
 cd app/gpt/train
 sbatch job.sb xforge/llama3-8b-1m
 ```
+
+## Acknowledgement
+This project builds upon several open-source efforts: [ring attention](https://github.com/zhuzilin/ring-flash-attention), [tree attention](https://github.com/Zyphra/tree_attention)
+
+## Citation 
+If you find this work helpful in your research or applications, please consider citing our paper:
+```
+@INPROCEEDINGS{ringX,
+  author={Junqi Yin and Mijanur Palash and Mallikarjun Shankar and Feiyi Wang},
+  title={RingX: Scalable Parallel Attention for Long Context Learning on HPC}, 
+  booktitle={SC25: International Conference for High Performance Computing, Networking, Storage and Analysis}, 
+  year={2025},
+}
+``` 
